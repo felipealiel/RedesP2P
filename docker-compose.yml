@@ -1,0 +1,26 @@
+services:
+  server:
+    build: .
+    command: python server.py
+    ports:
+      - "5000:5000"
+
+  peer1:
+    build: .
+    command: python client.py
+    environment:
+      - PORT=5001
+    volumes:
+      - ./shared_peer1:/app/shared
+    depends_on:
+      - server
+
+  peer2:
+    build: .
+    command: python client.py
+    environment:
+      - PORT=5002
+    volumes:
+      - ./shared_peer2:/app/shared
+    depends_on:
+      - server
