@@ -10,7 +10,10 @@ services:
     command: python client.py
     environment:
       - PORT=5001
+<<<<<<< HEAD
       - FOLDER=shared 
+=======
+>>>>>>> ffeeaad74be6770aeedead40e2488024ece6a4f8
     volumes:
       - ./shared_peer1:/app/shared
     depends_on:
@@ -21,7 +24,10 @@ services:
     command: python client.py
     environment:
       - PORT=5002
+<<<<<<< HEAD
       - FOLDER=shared  
+=======
+>>>>>>> ffeeaad74be6770aeedead40e2488024ece6a4f8
     volumes:
       - ./shared_peer2:/app/shared
     depends_on:
