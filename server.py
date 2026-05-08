@@ -3,6 +3,7 @@ import threading
 import json
 import time
 
+# Configuração de rede para aceitar conexões externas (celular)
 HOST = '0.0.0.0'
 PORT = 5000
 
@@ -13,7 +14,6 @@ playlist = []
 def handle_client(conn, addr):
     global peers, files, playlist
     try:
-        # Definimos um timeout para a conexão não ficar aberta eternamente
         conn.settimeout(10) 
         data = conn.recv(4096).decode()
         if not data:
@@ -25,6 +25,7 @@ def handle_client(conn, addr):
         if msg["type"] == "REGISTER":
             peer_id = f"{msg['ip']}:{msg['port']}"
             peers[peer_id] = time.time()
+            print(f"[*] Novo peer registrado: {peer_id}")
             response = {"status": "OK"}
 
         elif msg["type"] == "HEARTBEAT":
@@ -41,13 +42,8 @@ def handle_client(conn, addr):
                 files[file_hash]["peers"].append(peer_id)
             if file_hash not in playlist:
                 playlist.append(file_hash)
+            print(f"[+] Arquivo publicado: {msg['nome']} por {peer_id}")
             response = {"status": "PUBLISHED"}
-
-        elif msg["type"] == "SEARCH":
-            query = msg["query"].lower()
-            results = [{ "nome": f["nome"], "hash": h, "peers": f["peers"] } 
-                       for h, f in files.items() if query in f["nome"].lower()]
-            response = {"results": results}
 
         elif msg["type"] == "PLAYLIST":
             pl = [{"nome": files[h]["nome"], "hash": h} for h in playlist]
@@ -60,32 +56,41 @@ def handle_client(conn, addr):
         conn.close()
 
 def cleanup_peers():
+    """Remove peers que não enviam heartbeat há mais de 60 segundos"""
     while True:
         now = time.time()
         for peer in list(peers):
             if now - peers[peer] > 60:
-                print(f"Removendo peer inativo: {peer}")
+                print(f"[-] Removendo peer inativo: {peer}")
                 del peers[peer]
-        # Pausa longa para não consumir CPU desnecessariamente
-        time.sleep(30) 
+        time.sleep(20)
 
 def start_server():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # Resolve o erro "Address already in use"
-    s.bind((HOST, PORT))
-    s.listen(5)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    
+    try:
+        s.bind((HOST, PORT))
+    except Exception as e:
+        print(f"Erro ao iniciar servidor: {e}")
+        return
 
-    print(f"Servidor Tracker P2P rodando em {HOST}:{PORT}")
+    s.listen(5)
+    print(f"=== SERVIDOR TRACKER P2P ATIVO ===")
+    print(f"IP LOCAL PARA O CELULAR: 192.168.1.3")
+    print(f"PORTA: {PORT}")
+    print("Aguardando conexões...")
+
+    # Inicia a thread de limpeza de peers inativos
     threading.Thread(target=cleanup_peers, daemon=True).start()
 
     while True:
         try:
             conn, addr = s.accept()
-            # Criamos uma thread para cada cliente para não travar o servidor
+            # Cria uma thread para cada cliente
             threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
         except Exception as e:
             print(f"Erro ao aceitar conexão: {e}")
-        time.sleep(0.1) # DESCANSO PARA A CPU
 
 if __name__ == "__main__":
     start_server()

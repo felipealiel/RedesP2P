@@ -5,15 +5,27 @@ import os
 import hashlib
 import time
 
-SERVER_IP = "server"
+# ================= CONFIGURAÇÃO DO COMPUTADOR =================
+SERVER_IP = "192.168.1.3" 
 SERVER_PORT = 5000
+MY_PORT = 5002            # Porta diferente para não dar conflito
+SHARED = "musicas_pc"     # Pasta onde os downloads vão cair no PC
 
-MY_PORT = int(os.environ.get("PORT", 5001))
-MY_IP = socket.gethostname()
+# Descobre o IP do computador automaticamente
+def get_my_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
 
+MY_IP = get_my_ip()
 
-SHARED = os.environ.get("FOLDER", "shared")
-
+# ================= LÓGICA DE REDE E ARQUIVOS =================
 
 def hash_file(path):
     h = hashlib.md5()
@@ -22,232 +34,97 @@ def hash_file(path):
             h.update(chunk)
     return h.hexdigest()
 
-
 def send_server(msg):
+    try:
+        s = socket.socket()
+        s.settimeout(5)
+        s.connect((SERVER_IP, SERVER_PORT))
+        s.send(json.dumps(msg).encode())
+        data = s.recv(4096).decode()
+        s.close()
+        return json.loads(data)
+    except:
+        return None
+
+def serve_files():
+    """Permite que outros baixem arquivos DESTE computador (P2P Upload)"""
     s = socket.socket()
-    s.connect((SERVER_IP, SERVER_PORT))
-    s.send(json.dumps(msg).encode())
-    data = s.recv(4096).decode()
-    s.close()
-    return json.loads(data)
-
-
-def register():
-    send_server({
-        "type": "REGISTER",
-        "ip": MY_IP,
-        "port": MY_PORT
-    })
-
-
-def heartbeat():
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", MY_PORT))
+    s.listen(5)
     while True:
+        conn, addr = s.accept()
         try:
-            send_server({
-                "type": "HEARTBEAT",
-                "ip": MY_IP,
-                "port": MY_PORT
-            })
-        except:
-            print("Erro ao enviar heartbeat.")
-        time.sleep(30)
+            data = conn.recv(1024).decode()
+            if data.startswith("DOWNLOAD"):
+                h = data.split()[1]
+                for f in os.listdir(SHARED):
+                    path = os.path.join(SHARED, f)
+                    if os.path.isfile(path) and hash_file(path) == h:
+                        with open(path, "rb") as file:
+                            while chunk := file.read(4096):
+                                conn.send(chunk)
+                        break
+        except: pass
+        finally: conn.close()
 
+# ================= COMANDOS DO USUÁRIO =================
 
 def publish(file):
     path = os.path.join(SHARED, file)
-
-    if not os.path.exists(path):
-        print(f"Arquivo não existe em: {path}")
-        return
-
+    if not os.path.exists(path): return print(f"Erro: O arquivo deve estar na pasta {SHARED}")
     h = hash_file(path)
-
-    send_server({
-        "type": "PUBLISH",
-        "ip": MY_IP,
-        "port": MY_PORT,
-        "nome": file,
-        "hash": h
-    })
-
-    print(f"Publicado com hash: {h}")
-
-
-def search(q):
-    res = send_server({
-        "type": "SEARCH",
-        "query": q
-    })
-
-    if not res["results"]:
-        print("Nenhum resultado encontrado.")
-        return
-
-    for r in res["results"]:
-        print(r)
-
-
-def download(h, peer):
-    ip, port = peer.split(":")
-    port = int(port)
-
-    s = socket.socket()
-
-    try:
-        s.connect((ip, port))
-        s.send(f"DOWNLOAD {h}".encode())
-
-        # Salva o download na pasta correta do peer atual
-        filename = os.path.join(SHARED, f"{h}.mp3")
-        total = 0
-
-        with open(filename, "wb") as f:
-            while True:
-                data = s.recv(1024)
-                if not data:
-                    break
-                total += len(data)
-                f.write(data)
-
-        if total == 0:
-            os.remove(filename)
-            print("Falha no download: nenhum dado recebido.")
-        else:
-            print(f"Download concluído ({total} bytes) salvo em {SHARED}.")
-
-    except Exception as e:
-        print("Erro no download:", e)
-
-    finally:
-        s.close()
-
-
-def serve():
-    s = socket.socket()
-    s.bind(("0.0.0.0", MY_PORT))
-    s.listen()
-
-    while True:
-        conn, _ = s.accept()
-
-        try:
-            data = conn.recv(1024).decode()
-
-            if data.startswith("DOWNLOAD"):
-                parts = data.split()
-                if len(parts) < 2:
-                    continue
-                h = parts[1]
-
-                found = False
-
-                # Busca o arquivo na pasta correta configurada para este container
-                for f in os.listdir(SHARED):
-                    path = os.path.join(SHARED, f)
-
-                    if os.path.isfile(path) and hash_file(path) == h:
-                        found = True
-
-                        with open(path, "rb") as file:
-                            while True:
-                                chunk = file.read(1024)
-                                if not chunk:
-                                    break
-                                conn.send(chunk)
-                        break
-
-                if not found:
-                    print(f"Arquivo com hash {h} não encontrado em {SHARED}.")
-
-        except Exception as e:
-            print("Erro ao servir download:", e)
-
-        finally:
-            conn.close()
-
+    res = send_server({"type": "PUBLISH", "ip": MY_IP, "port": MY_PORT, "nome": file, "hash": h})
+    if res: print(f"Sucesso! Arquivo publicado com Hash: {h}")
 
 def playlist():
     res = send_server({"type": "PLAYLIST"})
+    if not res: return print("Erro ao conectar ao servidor.")
+    print("\n--- PLAYLIST GLOBAL (FESTA) ---")
+    if not res["playlist"]: print("A playlist está vazia.")
+    for m in res["playlist"]: 
+        print(f"♪ {m['nome']} | Hash: {m['hash']}")
 
-    print("\n=== Playlist Global ===")
-    for m in res["playlist"]:
-        print(m)
-
-
-def list_local():
-    if not os.path.exists(SHARED):
-        print(f"Pasta {SHARED} não encontrada.")
-        return
-
-    files = os.listdir(SHARED)
-
-    if not files:
-        print(f"Nenhum arquivo local em {SHARED}.")
-        return
-
-    print(f"\n=== Arquivos Locais ({SHARED}) ===")
-    for f in files:
-        print(f)
-
-
-def main():
-    os.makedirs(SHARED, exist_ok=True)
-
-    register()
-
-    threading.Thread(target=heartbeat, daemon=True).start()
-    threading.Thread(target=serve, daemon=True).start()
-
-    print(f"Cliente rodando na porta {MY_PORT} usando a pasta: {SHARED}")
-
-    while True:
-        time.sleep(1)
-
+def download(h, peer):
+    """BAIXA DIRETO DO CELULAR (P2P Download)"""
+    ip, port = peer.split(":")
+    s = socket.socket()
+    try:
+        print(f"Conectando ao peer {peer} para download...")
+        s.settimeout(10)
+        s.connect((ip, int(port)))
+        s.send(f"DOWNLOAD {h}".encode())
+        
+        filepath = os.path.join(SHARED, f"p2p_recebido_{h[:5]}.mp3")
+        with open(filepath, "wb") as f:
+            while data := s.recv(4096):
+                f.write(data)
+        print(f"Download P2P Concluído! Salvo em: {filepath}")
+    except Exception as e:
+        print(f"Erro no download: {e}")
+    finally:
+        s.close()
 
 def interactive():
+    print(f"\n--- CLIENTE PC LOGADO ---")
+    print(f"IP: {MY_IP} | Porta: {MY_PORT}")
+    print("Comandos: playlist, download [hash] [ip:porta], publish [nome], exit")
+    
     while True:
-        try:
-            cmd = input(">> ").strip()
-
-            if cmd.startswith("publish"):
-                parts = cmd.split(maxsplit=1)
-                if len(parts) < 2:
-                    print("Uso: publish [nome_do_arquivo]")
-                    continue
-                publish(parts[1])
-
-            elif cmd.startswith("search"):
-                parts = cmd.split(maxsplit=1)
-                if len(parts) < 2:
-                    print("Uso: search [termo]")
-                    continue
-                search(parts[1])
-
-            elif cmd.startswith("download"):
-                parts = cmd.split()
-                if len(parts) < 3:
-                    print("Uso: download [hash] [ip:porta]")
-                    continue
-                download(parts[1], parts[2])
-
-            elif cmd == "playlist":
-                playlist()
-
-            elif cmd == "list_local":
-                list_local()
-
-            elif cmd == "exit":
-                break
-
-            else:
-                print("Comando inválido.")
-
-        except Exception as e:
-            print("Erro:", e)
-
+        user_input = input("\n>> ").strip().split()
+        if not user_input: continue
+        
+        cmd = user_input[0].lower()
+        if cmd == "playlist": playlist()
+        elif cmd == "publish": publish(user_input[1])
+        elif cmd == "download": download(user_input[1], user_input[2])
+        elif cmd == "exit": break
 
 if __name__ == "__main__":
-    # Inicia a lógica de rede em segundo plano
-    threading.Thread(target=main, daemon=True).start() 
-    # Inicia o menu para você conseguir digitar
+    os.makedirs(SHARED, exist_ok=True)
+    # Registra no servidor
+    send_server({"type": "REGISTER", "ip": MY_IP, "port": MY_PORT})
+    # Inicia servidor de upload em background
+    threading.Thread(target=serve_files, daemon=True).start()
+    # Inicia menu
     interactive()
